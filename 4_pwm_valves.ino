@@ -35,7 +35,7 @@ void setup()  {
 } 
 
 void loop()  { 
-  //aquire the analog input for Y  and rescale the 0..1023 range to -255..255 range
+  //analog input rescale the 0..1023 range to -255..255 range
   analogTmp = analogRead(joysticYA);
   throttle = (512-analogTmp)/2;
 
