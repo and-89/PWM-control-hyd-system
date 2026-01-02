@@ -1,139 +1,134 @@
-//control system for two hydraulic motors with for PWM valves
-const byte joysticYA = A0; //Analog Jostick Y axis
-const byte joysticXA = A1; //Analog Jostick X axis
+// Control system for two hydraulic motors with four PWM valves
+// The code reads a two-axis joystick, mixes throttle and direction,
+// scales the results to avoid exceeding PWM limits, and drives forward
+// and reverse channels for each motor controller.
 
-const byte PWMleftFA = 10; //PWM FORWARD PIN for OSMC Controller A (left motor)
-const byte PWMleftRA = 9;  //PWM REVERSE PIN for OSMC Controller A (left motor)
-const byte PWMrightFB = 6;  //PWM FORWARD PIN for OSMC Controller B (right motor)
-const byte PWMrightRB = 5;  //PWM REVERSE PIN for OSMC Controller B (right motor)
-const byte disablePin = 2; //OSMC disable, pull LOW to enable motor controller
+const byte joysticYA = A0; // Analog joystick Y axis (throttle)
+const byte joysticXA = A1; // Analog joystick X axis (direction)
 
-int analogTmp = 0; //temporary variable to store 
-int throttle, direction = 0; //throttle (Y axis) and direction (X axis) 
+const byte PWMleftFA = 10; // PWM FORWARD PIN for OSMC Controller A (left motor)
+const byte PWMleftRA = 9;  // PWM REVERSE PIN for OSMC Controller A (left motor)
+const byte PWMrightFB = 6; // PWM FORWARD PIN for OSMC Controller B (right motor)
+const byte PWMrightRB = 5; // PWM REVERSE PIN for OSMC Controller B (right motor)
+const byte disablePin = 2; // OSMC disable, pull LOW to enable motor controller
 
-int leftMotor,leftMotorScaled = 0; //left Motor helper variables
-float leftMotorScale = 0;
+const int analogMidpoint = 512; // Midpoint value of the joystick inputs
+const int pwmMax = 255;         // Maximum PWM value for 8-bit timers
+const int deadZone = 5;         // Joystick dead zone to filter noise
 
-int rightMotor,rightMotorScaled = 0; //right Motor helper variables
-float rightMotorScale = 0;
+int throttle = 0;
+int direction = 0;
 
-float maxMotorScale = 0; //holds the mixed output scaling factor
+int leftMotor = 0;
+int leftMotorScaled = 0; // Left motor command after scaling and limiting
 
-int deadZone = 5; //jostick dead zone 
+int rightMotor = 0;
+int rightMotorScaled = 0; // Right motor command after scaling and limiting
 
-void setup()  { 
+float maxMotorScale = 0; // Holds the mixed output scaling factor
 
-  //initialization of pins  
+int readAxisDelta(byte analogPin) {
+  // Read the analog pin and convert the 0..1023 range to roughly -255..255
+  const int raw = analogRead(analogPin);
+  return (analogMidpoint - raw) / 2;
+}
+
+void mixInputs(int throttleInput, int directionInput, int &leftOutput, int &rightOutput) {
+  // Differential mixing: throttle moves both motors, direction skews them
+  leftOutput = throttleInput + directionInput;
+  rightOutput = throttleInput - directionInput;
+}
+
+float calculateScaleFactor(int leftOutput, int rightOutput) {
+  // Determine the largest magnitude as a fraction of the PWM range
+  const float leftScale = abs(leftOutput) / static_cast<float>(pwmMax);
+  const float rightScale = abs(rightOutput) / static_cast<float>(pwmMax);
+
+  // Never allow the scale to drop below 1.0 so small signals are unaffected
+  return max(1.0f, max(leftScale, rightScale));
+}
+
+int scaleAndConstrain(int rawValue, float scaleFactor, int minOutput, int maxOutput) {
+  // Apply scaling to prevent exceeding the PWM range and clamp to hardware-safe bounds
+  const float scaled = rawValue / scaleFactor;
+  return constrain(static_cast<int>(scaled), minOutput, maxOutput);
+}
+
+void printMixDebug(const char *label, int rawValue, float scaleValue, int outputValue) {
+  // Provide a compact debug line for serial monitoring
+  Serial.print(label);
+  Serial.print(" IN:");
+  Serial.print(rawValue);
+  Serial.print(" SCALE:");
+  Serial.print(scaleValue, 2);
+  Serial.print(" OUT:");
+  Serial.print(outputValue);
+  Serial.print(" | ");
+}
+
+void applyMotorOutput(byte forwardPin, byte reversePin, int command) {
+  // Apply the signed command to forward/reverse PWM channels with dead-zone handling
+  if (abs(command) <= deadZone) {
+    analogWrite(forwardPin, 0);
+    analogWrite(reversePin, 0);
+    Serial.print("IDLE | ");
+    return;
+  }
+
+  if (command > 0) {
+    analogWrite(reversePin, 0);
+    analogWrite(forwardPin, abs(command));
+    Serial.print("F");
+    Serial.print(abs(command));
+    Serial.print(" | ");
+  } else {
+    analogWrite(forwardPin, 0);
+    analogWrite(reversePin, abs(command));
+    Serial.print("R");
+    Serial.print(abs(command));
+    Serial.print(" | ");
+  }
+}
+
+void setup() {
+  // Initialize serial monitor for diagnostics
   Serial.begin(19200);
+
+  // Configure PWM pins for both motors
   pinMode(PWMleftFA, OUTPUT);
   pinMode(PWMleftRA, OUTPUT);
   pinMode(PWMrightFB, OUTPUT);
-  pinMode(PWMrightRB, OUTPUT);  
+  pinMode(PWMrightRB, OUTPUT);
 
+  // Enable the motor controller by pulling the disable pin LOW
   pinMode(disablePin, OUTPUT);
   digitalWrite(disablePin, LOW);
-} 
-
-void loop()  { 
-  //analog input rescale the 0..1023 range to -255..255 range
-  analogTmp = analogRead(joysticYA);
-  throttle = (512-analogTmp)/2;
-
-  delayMicroseconds(100);
-  //...and  the same for X axis
-  analogTmp = analogRead(joysticXA);
-  direction = (512-analogTmp)/2;
-
-  //mix throttle and direction
-  leftMotor = throttle;
-  rightMotor = direction;
-
-  //print the initial mix results
-  Serial.print("LIN:"); Serial.println( leftMotor, DEC);
-  Serial.print(", RIN:"); Serial.print( rightMotor, DEC);
-
-  //calculate the scale of the results in comparision base 8 bit PWM resolution
-  leftMotorScale =  leftMotor/255.0;
-  leftMotorScale = abs(leftMotorScale);
-  rightMotorScale =  rightMotor/255.0;
-  rightMotorScale = abs(rightMotorScale);
-
-  Serial.print("| LSCALE:"); Serial.print( leftMotorScale,2);
-  Serial.print(", RSCALE:"); Serial.print( rightMotorScale,2);
-
-  //choose the max scale value if it is above 1
-  maxMotorScale = max(leftMotorScale,rightMotorScale);
-  maxMotorScale = max(1,maxMotorScale);
-
-  //and apply it to the mixed values
-  leftMotorScaled = constrain(leftMotor/maxMotorScale,-120,185); //(x,y)joystik lewy do tyłu x, do przodu y
-  rightMotorScaled = constrain(rightMotor/maxMotorScale,-65,70);  //(x,y)joystik prawy do tyłu x, do przodu y
-
-  Serial.print("| LOUT:"); Serial.print( leftMotorScaled);
-  Serial.print(", ROUT:"); Serial.print( rightMotorScaled);
-
-  Serial.print(" |");
-
-  //apply the results to appropriate uC PWM outputs for the LEFT motor:
-  if(abs(leftMotorScaled)>deadZone)
-  {
-
-    if (leftMotorScaled > 0)
-    {
-      Serial.print("F");
-      Serial.print(abs(leftMotorScaled),DEC);
-
-      analogWrite(PWMleftRA,0);
-      analogWrite(PWMleftFA,abs(leftMotorScaled));            
-    }
-    else 
-    {
-      Serial.print("R");
-      Serial.print(abs(leftMotorScaled),DEC);
-
-      analogWrite(PWMleftFA,0);
-      analogWrite(PWMleftRA,abs(leftMotorScaled));  
-    }
-  }  
-  else 
-  {
-  Serial.print("IDLE");
-  analogWrite(PWMleftFA,0);
-  analogWrite(PWMleftRA,0);
-  } 
-
-  if(abs(rightMotorScaled)>deadZone)
-  {
-
-    if (rightMotorScaled > 0)
-    {
-      Serial.print("F");
-      Serial.print(abs(rightMotorScaled),DEC);
-
-      analogWrite(PWMrightRB,0);
-      analogWrite(PWMrightFB,abs(rightMotorScaled));            
-    }
-    else 
-    {
-      Serial.print("R");
-      Serial.print(abs(rightMotorScaled),DEC);
-
-      analogWrite(PWMrightFB,0);
-      analogWrite(PWMrightRB,abs(rightMotorScaled));  
-    }
-  }  
-  else 
-  {
-  Serial.print("IDLE");
-  analogWrite(PWMrightFB,0);
-  analogWrite(PWMrightRB,0);
-  } 
-
-  Serial.println("");
-
-
-  delay(10);
-
 }
-  
-  
+
+void loop() {
+  // Read joystick inputs and convert to signed values
+  throttle = readAxisDelta(joysticYA);
+  delayMicroseconds(100);
+  direction = readAxisDelta(joysticXA);
+
+  // Mix throttle and direction for differential control
+  mixInputs(throttle, direction, leftMotor, rightMotor);
+
+  // Calculate a scale factor so neither channel exceeds PWM range
+  maxMotorScale = calculateScaleFactor(leftMotor, rightMotor);
+
+  // Apply scaling and constrain to hardware-safe limits
+  leftMotorScaled = scaleAndConstrain(leftMotor, maxMotorScale, -120, 185);  // Left joystick: back x, forward y
+  rightMotorScaled = scaleAndConstrain(rightMotor, maxMotorScale, -65, 70);  // Right joystick: back x, forward y
+
+  // Print diagnostic information for tuning
+  printMixDebug("L", leftMotor, maxMotorScale, leftMotorScaled);
+  printMixDebug("R", rightMotor, maxMotorScale, rightMotorScaled);
+
+  // Drive motors with the scaled outputs
+  applyMotorOutput(PWMleftFA, PWMleftRA, leftMotorScaled);
+  applyMotorOutput(PWMrightFB, PWMrightRB, rightMotorScaled);
+
+  Serial.println();
+  delay(10);
+}
